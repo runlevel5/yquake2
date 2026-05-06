@@ -312,6 +312,20 @@ ifeq ($(COMPILER), gcc)
 override CFLAGS += -ffp-contract=off
 endif
 
+# Enable VSX on little-endian POWER. The software renderer has hand-written
+# VSX paths gated on __VSX__ (POWER8 baseline). We pick the most capable
+# -mcpu the host supports by probing /proc/cpuinfo; users can override with
+# `make YQ2_PPC_CPU=power8` etc. POWER8 is the safe fallback because the
+# ppc64le ELFv2 ABI requires POWER8 minimum.
+ifeq ($(YQ2_ARCH), ppc64le)
+YQ2_PPC_CPU ?= $(shell \
+	if grep -qm1 POWER10 /proc/cpuinfo 2>/dev/null; then echo power10; \
+	elif grep -qm1 POWER9 /proc/cpuinfo 2>/dev/null; then echo power9; \
+	elif grep -qm1 POWER8 /proc/cpuinfo 2>/dev/null; then echo power8; \
+	else echo power8; fi)
+override CFLAGS += -mcpu=$(YQ2_PPC_CPU) -mvsx
+endif
+
 # ----------
 
 # Systemwide installation.

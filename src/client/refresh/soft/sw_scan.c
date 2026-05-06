@@ -23,6 +23,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "header/local.h"
 
+#ifdef __VSX__
+#include <altivec.h>
+#undef bool
+#undef pixel
+#endif
 
 #define SPANSTEP_SHIFT	4
 
@@ -798,6 +803,49 @@ D_DrawZSpans (espan_t *pspan, float d_ziorigin, float d_zistepu, float d_zistepv
 		}
 		else
 		{
+#ifdef __VSX__
+			/* 4-lane z-buffer ramp fill. izi is 32-bit signed; build a
+			 * vector containing four consecutive ramp values, store it,
+			 * then advance by 4*izistep. The arithmetic right shift
+			 * matches the scalar `izi >> SHIFT16XYZ`. */
+			if (count >= 4)
+			{
+				vector signed int vizi = {
+					izi,
+					izi + izistep,
+					izi + 2 * izistep,
+					izi + 3 * izistep
+				};
+				const vector signed int vstep4 =
+					vec_splats((signed int)(izistep * 4));
+				const vector unsigned int vshift =
+					vec_splats((unsigned int)SHIFT16XYZ);
+				while (count >= 4)
+				{
+					vec_xst(vec_sra(vizi, vshift), 0,
+						(signed int *)pdest);
+					vizi = vec_add(vizi, vstep4);
+					pdest += 4;
+					count -= 4;
+				}
+#ifdef _ARCH_PWR9
+				/* POWER9: fold the 0..3 element tail into a single
+				 * masked vector store via stxvl. Bytes beyond the
+				 * requested length aren't written. */
+				if (count > 0)
+				{
+					vec_xst_len((vector unsigned char)
+						vec_sra(vizi, vshift),
+						(unsigned char *)pdest,
+						(size_t)(count * 4));
+					pdest += count;
+					count = 0;
+				}
+#endif
+				/* Resync scalar izi from where the vector loop left it. */
+				izi = vec_extract(vizi, 0);
+			}
+#endif
 			while (count > 0)
 			{
 				*pdest++ = izi >> SHIFT16XYZ;
