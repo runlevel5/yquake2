@@ -452,10 +452,6 @@ R_BuildLightMap (drawsurf_t* drawsurf)
 				 * literal, splat the scale, multiply (vmuluwm on POWER8+)
 				 * and add to the running blocklights vector. */
 				vector unsigned int vscale = vec_splats((unsigned int)scale);
-				/* A POWER10 paired-load/store variant was tried here but
-				 * measured slower than the POWER9 path on a POWER10 box —
-				 * the disassemble_pair / assemble_pair round-trip cost
-				 * more than the wider memory access saved. */
 				while (curr_light + 4 <= max_light)
 				{
 					vector unsigned int vlm = {
@@ -496,9 +492,6 @@ R_BuildLightMap (drawsurf_t* drawsurf)
 			const vector unsigned int vshift = vec_splats((unsigned int)(8 - VID_CBITS));
 			const vector signed int vfloor = vec_splats((signed int)(1 << 6));
 
-			/* Same finding as the color path above: a POWER10 paired
-			 * load/store variant was slower in measurement; sticking
-			 * with the 4-lane VSX loop. */
 			while (curr_light + 4 <= max_light)
 			{
 				vector signed int t = (vector signed int)

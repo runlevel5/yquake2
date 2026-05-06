@@ -2256,19 +2256,9 @@ RE_CopyFrame(Uint32 *pixels, int pitch, SDL_Rect *rect)
 		src_max = src + rect->h * vid_buffer_width;
 
 #ifdef __VSX__
-		/* Process 16 source bytes at a time. POWER has no native gather,
-		 * so the four palette lookups per output vector still happen as
-		 * scalar loads, but composing them into a vector and doing a
-		 * single 16-byte store keeps the store side wide and lets the
-		 * out-of-order engine pipeline the gathers.
-		 *
-		 * The prefetch hint targets the framebuffer source stream, which
-		 * is ~2 MB at 1080p — far larger than L1d, and the POWER8/9 HW
-		 * prefetcher doesn't always lock onto a byte-stride cleanly here.
-		 * Measured on a quiet POWER9 box: this single dcbt halves the
-		 * time spent in this loop (~17 us → ~8 us per frame at 1920x1080).
-		 * On POWER10 the HW prefetcher already covers the pattern and
-		 * the hint is a no-op. 256 = 2 cache lines (POWER line = 128 B). */
+		/* Process 16 source bytes per iter: scalar palette lookups
+		 * composed into a vector, single 16-byte store. Prefetch the
+		 * source 2 cache lines ahead. */
 		while (src + 16 <= src_max)
 		{
 			__builtin_prefetch(src + 256);
@@ -2345,12 +2335,6 @@ RE_BufferDifferenceStart(int vmin, int vmax)
 	back_max = (int*)(swap_frames[0] + vmax);
 
 #ifdef __VSX__
-	/* A POWER10 paired-load (lxvp) variant was tried and measured as a
-	 * ~10% regression on a POWER10 box vs the single-VSX path: the
-	 * disassemble_pair round-trip back into individual VSRs (needed for
-	 * vec_all_eq) costs more than two plain vec_xl loads. Sticking with
-	 * the 16-byte chunked loop for both POWER9 and POWER10. */
-
 	/* Skip 4 ints (16 bytes) at a time. vec_xl handles unaligned loads
 	 * natively on POWER8+. Stop on the first 16-byte chunk that differs;
 	 * the scalar tail then locates the exact mismatching int. */
@@ -2383,10 +2367,6 @@ RE_BufferDifferenceEnd(int vmin, int vmax)
 	back_min = (int*)(swap_frames[0] + vmin);
 
 #ifdef __VSX__
-	/* See note in RE_BufferDifferenceStart: a POWER10 paired-load
-	 * variant regressed in measurement, so the same 4-int chunk loop
-	 * is used here for both POWER9 and POWER10. */
-
 	/* Walk backward 4 ints at a time over the chunk just before the
 	 * current cursor; scalar tail then refines the boundary. */
 	while (back_buffer - 4 > back_min)

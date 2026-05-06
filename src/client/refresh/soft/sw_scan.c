@@ -820,11 +820,6 @@ D_DrawZSpans (espan_t *pspan, float d_ziorigin, float d_zistepu, float d_zistepv
 					vec_splats((signed int)(izistep * 4));
 				const vector unsigned int vshift =
 					vec_splats((unsigned int)SHIFT16XYZ);
-				/* Note: an explicit POWER10 paired-store (stxvp) variant
-				 * was tried here but measured slower than the POWER9 path
-				 * on a POWER10 box — the assemble_pair round-trip and the
-				 * second ramp accumulator added more instructions than
-				 * the wider store saved. Left as a single 4-lane loop. */
 				while (count >= 4)
 				{
 					vec_xst(vec_sra(vizi, vshift), 0,
