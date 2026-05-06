@@ -137,6 +137,8 @@ endif()
 
 if(cpu STREQUAL "powerpc")
 	set(cpu "ppc")
+elseif(cpu STREQUAL "ppc64le" OR cpu STREQUAL "powerpc64le")
+	set(cpu "ppc64le")
 elseif(cpu STREQUAL "aarch64")
 	# "arm64" is more obvious, and some operating systems (like macOS) use it instead of "aarch64"
 	set(cpu "arm64")
@@ -302,6 +304,29 @@ if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
 		if (CMAKE_SIZEOF_VOID_P EQUAL 4)
 			set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=armv6k")
 		endif()
+	endif()
+
+	# Enable VSX on little-endian POWER. The software renderer has
+	# hand-written VSX paths gated on __VSX__ (POWER8 baseline).
+	# Pick the most capable -mcpu the host advertises; override with
+	# -DYQ2_PPC_CPU=power8 if cross-building. POWER8 is the safe
+	# fallback because the ppc64le ELFv2 ABI requires it minimum.
+	if ("${ARCH}" STREQUAL "ppc64le")
+		if(NOT DEFINED YQ2_PPC_CPU)
+			if(EXISTS "/proc/cpuinfo")
+				file(STRINGS "/proc/cpuinfo" _cpuinfo REGEX "^cpu" LIMIT_COUNT 1)
+				if(_cpuinfo MATCHES "POWER10")
+					set(YQ2_PPC_CPU "power10")
+				elseif(_cpuinfo MATCHES "POWER9")
+					set(YQ2_PPC_CPU "power9")
+				else()
+					set(YQ2_PPC_CPU "power8")
+				endif()
+			else()
+				set(YQ2_PPC_CPU "power8")
+			endif()
+		endif()
+		set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mcpu=${YQ2_PPC_CPU} -mvsx")
 	endif()
 endif()
 

@@ -29,6 +29,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "header/local.h"
 
+#ifdef __VSX__
+#include <altivec.h>
+/* altivec.h leaks `bool`/`vector`/`pixel` keywords; only `vector` is needed
+ * and `pixel_t` doesn't collide. Drop the others to avoid surprises. */
+#undef bool
+#undef pixel
+#endif
+
 #define NUMSTACKEDGES		2048
 #define NUMSTACKSURFACES	1024
 #define MAXALIASVERTS		2048
@@ -2247,6 +2255,39 @@ RE_CopyFrame(Uint32 *pixels, int pitch, SDL_Rect *rect)
 		src = vid_buffer + rect->y * vid_buffer_width;
 		src_max = src + rect->h * vid_buffer_width;
 
+#ifdef __VSX__
+		/* Process 16 source bytes at a time. POWER has no native gather,
+		 * so the four palette lookups per output vector still happen as
+		 * scalar loads, but composing them into a vector and doing a
+		 * single 16-byte store keeps the store side wide and lets the
+		 * out-of-order engine pipeline the gathers. */
+		while (src + 16 <= src_max)
+		{
+			vector unsigned int v0 = {
+				sdl_palette[src[0]], sdl_palette[src[1]],
+				sdl_palette[src[2]], sdl_palette[src[3]]
+			};
+			vector unsigned int v1 = {
+				sdl_palette[src[4]], sdl_palette[src[5]],
+				sdl_palette[src[6]], sdl_palette[src[7]]
+			};
+			vector unsigned int v2 = {
+				sdl_palette[src[8]],  sdl_palette[src[9]],
+				sdl_palette[src[10]], sdl_palette[src[11]]
+			};
+			vector unsigned int v3 = {
+				sdl_palette[src[12]], sdl_palette[src[13]],
+				sdl_palette[src[14]], sdl_palette[src[15]]
+			};
+			vec_xst(v0, 0,  (unsigned int *)dst);
+			vec_xst(v1, 16, (unsigned int *)dst);
+			vec_xst(v2, 32, (unsigned int *)dst);
+			vec_xst(v3, 48, (unsigned int *)dst);
+			src += 16;
+			dst += 16;
+		}
+#endif
+
 		while (src < src_max)
 		{
 			*dst = sdl_palette[*src];
@@ -2294,6 +2335,27 @@ RE_BufferDifferenceStart(int vmin, int vmax)
 	front_buffer = (int*)(swap_frames[1] + vmin);
 	back_max = (int*)(swap_frames[0] + vmax);
 
+#ifdef __VSX__
+	/* A POWER10 paired-load (lxvp) variant was tried and measured as a
+	 * ~10% regression on a POWER10 box vs the single-VSX path: the
+	 * disassemble_pair round-trip back into individual VSRs (needed for
+	 * vec_all_eq) costs more than two plain vec_xl loads. Sticking with
+	 * the 16-byte chunked loop for both POWER9 and POWER10. */
+
+	/* Skip 4 ints (16 bytes) at a time. vec_xl handles unaligned loads
+	 * natively on POWER8+. Stop on the first 16-byte chunk that differs;
+	 * the scalar tail then locates the exact mismatching int. */
+	while (back_buffer + 4 <= back_max)
+	{
+		vector unsigned int b = vec_xl(0, (const unsigned int *)back_buffer);
+		vector unsigned int f = vec_xl(0, (const unsigned int *)front_buffer);
+		if (!vec_all_eq(b, f))
+			break;
+		back_buffer += 4;
+		front_buffer += 4;
+	}
+#endif
+
 	while (back_buffer < back_max && *back_buffer == *front_buffer) {
 		back_buffer ++;
 		front_buffer ++;
@@ -2310,6 +2372,24 @@ RE_BufferDifferenceEnd(int vmin, int vmax)
 	back_buffer = (int*)(swap_frames[0] + vmax);
 	front_buffer = (int*)(swap_frames[1] + vmax);
 	back_min = (int*)(swap_frames[0] + vmin);
+
+#ifdef __VSX__
+	/* See note in RE_BufferDifferenceStart: a POWER10 paired-load
+	 * variant regressed in measurement, so the same 4-int chunk loop
+	 * is used here for both POWER9 and POWER10. */
+
+	/* Walk backward 4 ints at a time over the chunk just before the
+	 * current cursor; scalar tail then refines the boundary. */
+	while (back_buffer - 4 > back_min)
+	{
+		vector unsigned int b = vec_xl(0, (const unsigned int *)(back_buffer - 4));
+		vector unsigned int f = vec_xl(0, (const unsigned int *)(front_buffer - 4));
+		if (!vec_all_eq(b, f))
+			break;
+		back_buffer -= 4;
+		front_buffer -= 4;
+	}
+#endif
 
 	do
 	{

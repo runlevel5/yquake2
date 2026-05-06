@@ -21,6 +21,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "header/local.h"
 
+#ifdef __VSX__
+#include <altivec.h>
+#undef bool
+#undef pixel
+#endif
+
 /*
 =============================================================================
 
@@ -440,13 +446,34 @@ R_BuildLightMap (drawsurf_t* drawsurf)
 			}
 			else
 			{
-				do
+#ifdef __VSX__
+				/* 4-lane u32 multiply-accumulate. The lightmap byte stream
+				 * is packed; widen 4 bytes to a u32 vector by composing a
+				 * literal, splat the scale, multiply (vmuluwm on POWER8+)
+				 * and add to the running blocklights vector. */
+				vector unsigned int vscale = vec_splats((unsigned int)scale);
+				/* A POWER10 paired-load/store variant was tried here but
+				 * measured slower than the POWER9 path on a POWER10 box —
+				 * the disassemble_pair / assemble_pair round-trip cost
+				 * more than the wider memory access saved. */
+				while (curr_light + 4 <= max_light)
+				{
+					vector unsigned int vlm = {
+						lightmap[0], lightmap[1], lightmap[2], lightmap[3]
+					};
+					vector unsigned int vbl = vec_xl(0, (const unsigned int *)curr_light);
+					vbl = vec_add(vbl, vec_mul(vlm, vscale));
+					vec_xst(vbl, 0, (unsigned int *)curr_light);
+					curr_light += 4;
+					lightmap += 4;
+				}
+#endif
+				while (curr_light < max_light)
 				{
 					*curr_light += *lightmap * scale;
 					curr_light++;
 					lightmap ++; /* skip to next lightmap */
 				}
-				while(curr_light < max_light);
 			}
 		}
 	}
@@ -462,7 +489,59 @@ R_BuildLightMap (drawsurf_t* drawsurf)
 		curr_light = blocklights;
 		max_light = blocklights + size;
 
-		do
+#ifdef __VSX__
+		{
+			const vector signed int vzero  = vec_splats((signed int)0);
+			const vector signed int vbase  = vec_splats((signed int)(255 * 256));
+			const vector unsigned int vshift = vec_splats((unsigned int)(8 - VID_CBITS));
+			const vector signed int vfloor = vec_splats((signed int)(1 << 6));
+
+			/* Same finding as the color path above: a POWER10 paired
+			 * load/store variant was slower in measurement; sticking
+			 * with the 4-lane VSX loop. */
+			while (curr_light + 4 <= max_light)
+			{
+				vector signed int t = (vector signed int)
+					vec_xl(0, (const unsigned int *)curr_light);
+				t = vec_max(t, vzero);
+				t = vec_sub(vbase, t);
+				t = vec_sra(t, vshift);
+				t = vec_max(t, vfloor);
+				vec_xst((vector unsigned int)t, 0,
+					(unsigned int *)curr_light);
+				curr_light += 4;
+			}
+#ifdef _ARCH_PWR9
+			/* POWER9: fold the 0..3 element tail into one masked
+			 * load + 4-lane invert/clamp + masked store. Bytes
+			 * beyond the requested length read as zero (which
+			 * passes through clamp(>=0) → invert → shift → clamp(>=64)
+			 * unchanged in the unused lanes; only the live lanes
+			 * are written back). */
+			{
+				size_t tail = (size_t)(max_light - curr_light);
+				if (tail > 0)
+				{
+					size_t bytes = tail * sizeof(*curr_light);
+					vector signed int t = (vector signed int)
+						vec_xl_len(
+							(const unsigned char *)curr_light,
+							bytes);
+					t = vec_max(t, vzero);
+					t = vec_sub(vbase, t);
+					t = vec_sra(t, vshift);
+					t = vec_max(t, vfloor);
+					vec_xst_len((vector unsigned char)t,
+						(unsigned char *)curr_light,
+						bytes);
+					curr_light = max_light;
+				}
+			}
+#endif
+		}
+#endif
+
+		while (curr_light < max_light)
 		{
 			int t;
 
@@ -478,6 +557,5 @@ R_BuildLightMap (drawsurf_t* drawsurf)
 			*curr_light = t;
 			curr_light++;
 		}
-		while(curr_light < max_light);
 	}
 }
